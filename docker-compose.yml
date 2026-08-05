@@ -1,0 +1,45 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - APK_PATH=/apk/capture-app-debug.apk
+      - SERVE_ADMIN_PORTAL=true
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      - ./admin-portal/dist:/app/admin-portal-dist:ro
+      - ./android/capture-app/build/outputs/apk/debug:/apk:ro
+      - backend_data:/app/data
+      - backend_models:/app/models
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./admin-portal
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_PROXY_TARGET=http://backend:8000
+    volumes:
+      - ./admin-portal/src:/app/src
+      - ./admin-portal/public:/app/public
+      - ./admin-portal/index.html:/app/index.html
+      - ./admin-portal/vite.config.ts:/app/vite.config.ts
+      - ./admin-portal/tsconfig.json:/app/tsconfig.json
+      - ./admin-portal/tsconfig.app.json:/app/tsconfig.app.json
+      - ./admin-portal/tsconfig.node.json:/app/tsconfig.node.json
+    depends_on:
+      - backend
+
+volumes:
+  backend_data:
+  backend_models:

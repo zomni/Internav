@@ -1,0 +1,39 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Runtime databases ----
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Model artifacts (generated at training time) ----
+backend/models/
+
+# ---- Logs ----
+*.log
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- IDE / editors ----
+.idea/
+.vscode/
+*.iml

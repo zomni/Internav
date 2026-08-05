@@ -1,0 +1,40 @@
+name: Admin Portal CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["admin-portal/**", ".github/workflows/admin-portal.yml"]
+  pull_request:
+    paths: ["admin-portal/**"]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-portal/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx prettier --check .
+
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-portal/package-lock.json
+      - run: npm ci
+      - run: npm run build
