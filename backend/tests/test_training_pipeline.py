@@ -165,6 +165,32 @@ class TestTrainEndpoint:
         )
         assert resp.status_code == 404
 
+    def test_train_empty_dataset_returns_409_and_marks_failed(self, client, seed_admin):
+        token = login_admin(client)
+        org = _create_org(client, token)
+        site = _create_site(client, token, org["id"])
+        bld = _create_building(client, token, site["id"])
+        floor = _create_floor(client, token, bld["id"])
+
+        dsid = client.post(
+            "/api/v1/datasets",
+            json={"name": "Empty Dataset"},
+            headers=auth_header(token),
+        ).json()["data"]["id"]
+
+        mv_id = client.post(
+            "/api/v1/models",
+            json={"dataset_id": dsid, "floor_id": floor["id"], "algorithm": "knn"},
+            headers=auth_header(token),
+        ).json()["data"]["id"]
+
+        resp = client.post(f"/api/v1/models/{mv_id}/train", headers=auth_header(token))
+        assert resp.status_code == 409
+        assert "Training failed" in resp.json()["detail"]
+
+        mv = client.get(f"/api/v1/models/{mv_id}", headers=auth_header(token)).json()["data"]
+        assert mv["status"] == "Failed"
+
     def test_download_after_train_succeeds(self, client, seed_admin):
         token = login_admin(client)
         floor, dataset = self._setup_complete_scenario(client, token)

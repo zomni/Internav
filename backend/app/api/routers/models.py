@@ -4,8 +4,9 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
+from app.domain.entities.model_version import ModelVersionStatus
 from app.domain.entities.user import UserRole
 from app.domain.errors import BusinessRuleViolation, DomainValidationError
 from app.domain.events import DomainEvent, EventBus, EventType
@@ -25,6 +26,8 @@ def _handle_domain_errors(exc: Exception) -> HTTPException:
     if isinstance(exc, BusinessRuleViolation):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, DomainValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, ValueError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal error."
@@ -200,6 +203,16 @@ def train_model(
         entity = service.train(model_version_id=model_id)
     except (LookupError, ValueError, RuntimeError, BusinessRuleViolation) as exc:
         raise _handle_domain_errors(exc)
+    if entity.status == ModelVersionStatus.FAILED:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "detail": (
+                    "Training failed. Ensure the dataset is built and contains "
+                    "completed campaigns with fingerprints."
+                )
+            },
+        )
     return success(data=_model_dict(entity), message="Training completed.")
 
 

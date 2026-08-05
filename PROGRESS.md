@@ -1391,4 +1391,73 @@ Cambios:
 **Pendiente manual:** reinstalar `user-app-debug.apk`. La URL ya viene con el
 default ngrok; escribir el email a mano (o con el teclado de email) y probar.
 
+### Fix Admin Portal: "Create Campaign" daba "Request failed" (5 Ago 2026)
+
+**Causa:** `CampaignListPage.handleCreate` posteaba a `POST /api/v1/campaigns`
+(vía `crud.create`), pero el backend solo expone
+`POST /api/v1/floors/{floor_id}/campaigns` (el floor va en la URL, no en el body).
+El 405 devolvía `{"detail":"Method Not Allowed"}` sin `message` → el cliente
+lanzaba el genérico `Request failed`. Verificado: `POST /api/v1/campaigns` → 405;
+`POST /api/v1/floors/{id}/campaigns` → 201.
+
+**Fix en `admin-portal/src/pages/CampaignListPage.tsx`:**
+- `handleCreate` ahora usa `api.post('/floors/${formFloor}/campaigns', { name })`,
+  muestra toast de éxito/error y refresca la lista (`crud.list()`).
+
+Se auditó el resto de páginas: solo CampaignListPage tenía la URL incorrecta
+(Grid/Dataset/Model/Org/Site/Building/Floor ya apuntaban bien).
+
+**Build:** `npm run build` OK → bundle nuevo `index-BRoEtyxT.js` servido por el
+backend (verificado: el HTML de `/` ya referencia el hash nuevo).
+
+**Pendiente manual:** Ctrl+F5 en `localhost:8000/campaigns` y probar Create Campaign.
+
+### Fix Admin Portal: Delete sin efecto + Train "Request failed" (5 Ago 2026)
+
+**Bug 1 — Borrar dataset/modelo no actualizaba la UI (desaparecía al refrescar):**
+Los endpoints DELETE (`/datasets/{id}`, `/models/{id}`, etc.) responden **204 sin
+body**, pero `api.ts` hacía `res.json()` incondicional → lanzaba error → el
+`.then()` que quita la fila (y cierra el diálogo) nunca corría. El server ya
+había soft-deleteado → al refrescar, el item no aparecía.
+- `admin-portal/src/services/api.ts`: `apiRequest` y `upload` ahora manejan
+  body vacío/204 (`res.json().catch(() => null)`) y además exponen el campo
+  `detail` de FastAPI (`json?.detail`) en el mensaje de error, para que los
+  4xx/5xx muestren el motivo real y no el genérico "Request failed".
+- Afecta a todos los deletes (org/site/building/floor/campaign/dataset/model).
+
+**Bug 2 — Train daba "Request failed":**
+`TrainingPipelineService.train` lanza `ValueError("No samples in dataset.
+Cannot train.")` cuando el dataset no tiene fingerprints; `_handle_domain_errors`
+de `models.py` mapeaba ValueError → 500 "Internal error." → portal mostraba
+"Request failed". Además, con `get_session` (commit en éxito / **rollback en
+excepción**), un "mark-failed tras excepción" se perdía y el modelo quedaba
+atascado en `Training`.
+- `backend/app/api/routers/models.py`: ValueError → **400** en
+  `_handle_domain_errors`; el handler de `/train` devuelve **409** (JSONResponse,
+  sin excepción) cuando el modelo terminó en `Failed`.
+- `backend/app/application/model_version_service.py`: `train()` captura el error,
+  transiciona el modelo a **Failed** y lo **retorna** (no re-lanza) para que el
+  commit persista la transición; si el status no es Training, re-lanza.
+- `backend/tests/test_training_pipeline.py`: nuevo test
+  `test_train_empty_dataset_returns_409_and_marks_failed` (409 + status Failed).
+
+**Bug 3 — Falta de UI para agregar campañas al Dataset (flujo roto):**
+`DatasetListPage` no tenía forma de llamar a
+`PATCH /datasets/{id}/add-campaigns` → sin campañas no se podía Build →
+train siempre fallaba. Ahora hay botón **"Add Campaigns"** en datasets Draft
+con un modal de checkboxes (solo campañas `Completed`) + toast de éxito/error.
+
+**Verificación:**
+- `npm run build` OK → bundle `index-DgcnV0vu.js` servido por el backend (verificado).
+- Suite backend en contenedor: **378 passed** (1 warning Starlette). Ruff: solo
+  EXE002 preexistente.
+- En vivo: train con dataset sin muestras → **409** `"Training failed. Ensure the
+  dataset is built and contains completed campaigns with fingerprints."` y el
+  modelo queda `Failed`; DELETE 204 de modelo/dataset funcionando.
+
+**Pendiente manual:** Ctrl+F5 en `localhost:8000`. Para entrenar un modelo real:
+completar campaña(s) → Dataset → Add Campaigns → Build → Create Model → Train →
+Publish. La campaña del Piso 2 ("Primera campanya") sigue Paused con 4 fingerprints
+(insuficientes para un modelo útil; capturar más antes de completar).
+
 

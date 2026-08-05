@@ -60,12 +60,14 @@ export function CampaignListPage() {
     if (!formName || !formFloor) return;
     setSaving(true);
     try {
-      await crud.create({ name: formName, floor_id: formFloor });
+      await api.post(`/floors/${formFloor}/campaigns`, { name: formName });
+      setToast({ message: 'Campaign created', type: 'success' });
       setFormOpen(false);
       setFormName('');
       setFormFloor('');
+      crud.list();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Create failed');
+      setToast({ message: err instanceof Error ? err.message : 'Create failed', type: 'error' });
     } finally {
       setSaving(false);
     }

@@ -104,11 +104,16 @@ async function apiRequest<T>(
     }
   }
 
-  const json = (await res.json()) as ApiEnvelope<T>;
-  if (!res.ok || !json.success) {
-    throw new ApiError(res.status, json.message || json.errors?.[0] || 'Request failed');
+  const json = (await res.json().catch(() => null)) as
+    | (ApiEnvelope<T> & { detail?: string })
+    | null;
+  if (!res.ok || (json && !json.success)) {
+    throw new ApiError(
+      res.status,
+      json?.message || json?.errors?.[0] || json?.detail || 'Request failed',
+    );
   }
-  return json.data;
+  return (json?.data ?? null) as T;
 }
 
 export const api = {
@@ -128,9 +133,12 @@ export const api = {
         res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: formData });
       }
     }
-    const json = (await res.json()) as ApiEnvelope<T>;
-    if (!res.ok || !json.success) throw new ApiError(res.status, json.message || 'Upload failed');
-    return json.data;
+    const json = (await res.json().catch(() => null)) as
+      | (ApiEnvelope<T> & { detail?: string })
+      | null;
+    if (!res.ok || (json && !json.success))
+      throw new ApiError(res.status, json?.message || json?.detail || 'Upload failed');
+    return (json?.data ?? null) as T;
   },
   login: async (email: string, password: string) => {
     const res = await fetch(`${BASE_URL}/auth/login`, {

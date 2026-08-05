@@ -19,9 +19,18 @@ export function DatasetListPage() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dataset | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string; status: string }[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTarget, setAddTarget] = useState<Dataset | null>(null);
+  const [selectedCampaigns, setSelectedCampaigns] = useState<string[]>([]);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     crud.list();
+    api
+      .get<unknown[]>('/campaigns')
+      .then((d) => setCampaigns(d as { id: string; name: string; status: string }[]))
+      .catch(() => {});
   }, []);
 
   const handleBuild = async (id: string) => {
@@ -58,6 +67,26 @@ export function DatasetListPage() {
     }
   };
 
+  const handleAddCampaigns = async () => {
+    if (!addTarget || selectedCampaigns.length === 0) return;
+    setAdding(true);
+    try {
+      await api.patch(`/datasets/${addTarget.id}/add-campaigns`, {
+        campaign_ids: selectedCampaigns,
+      });
+      setToast({ message: 'Campaigns added', type: 'success' });
+      setAddOpen(false);
+      setSelectedCampaigns([]);
+      crud.list();
+    } catch (err) {
+      setToast({ message: err instanceof Error ? err.message : 'Add failed', type: 'error' });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const completedCampaigns = campaigns.filter((c) => c.status === 'Completed');
+
   const columns: Column<Dataset>[] = [
     { key: 'name', header: 'Name' },
     {
@@ -80,15 +109,28 @@ export function DatasetListPage() {
             render: (r: Dataset) => (
               <div style={{ display: 'flex', gap: 4 }}>
                 {r.status === 'Draft' && (
-                  <button
-                    className="btn btn-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleBuild(r.id);
-                    }}
-                  >
-                    Build
-                  </button>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      className="btn btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleBuild(r.id);
+                      }}
+                    >
+                      Build
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAddTarget(r);
+                        setSelectedCampaigns([]);
+                        setAddOpen(true);
+                      }}
+                    >
+                      Add Campaigns
+                    </button>
+                  </div>
                 )}
                 {(r.status === 'Ready' || r.status === 'Draft') && (
                   <button
@@ -155,6 +197,40 @@ export function DatasetListPage() {
           </button>
           <button className="btn btn-primary" onClick={handleCreate} disabled={saving || !formName}>
             {saving ? 'Creating...' : 'Create'}
+          </button>
+        </div>
+      </Modal>
+      <Modal open={addOpen} title={`Add Campaigns to "${addTarget?.name}"`} onClose={() => setAddOpen(false)}>
+        {completedCampaigns.length === 0 ? (
+          <p>No completed campaigns available. Complete a campaign first.</p>
+        ) : (
+          <div className="form-group">
+            {completedCampaigns.map((c) => (
+              <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedCampaigns.includes(c.id)}
+                  onChange={(e) =>
+                    setSelectedCampaigns((prev) =>
+                      e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id),
+                    )
+                  }
+                />
+                {c.name}
+              </label>
+            ))}
+          </div>
+        )}
+        <div className="form-actions">
+          <button className="btn" onClick={() => setAddOpen(false)}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={handleAddCampaigns}
+            disabled={adding || selectedCampaigns.length === 0}
+          >
+            {adding ? 'Adding...' : 'Add'}
           </button>
         </div>
       </Modal>

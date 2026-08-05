@@ -59,7 +59,14 @@ class ModelVersionService:
     def train(self, model_version_id: UUID) -> ModelVersion:
         if self._training_pipeline is None:
             raise RuntimeError("Training pipeline not configured.")
-        return self._training_pipeline.train(model_version_id)
+        try:
+            return self._training_pipeline.train(model_version_id)
+        except Exception:
+            mv = self.get(model_version_id)
+            if mv.status != ModelVersionStatus.TRAINING:
+                raise
+            mv.transition_to(ModelVersionStatus.FAILED)
+            return self._model_version_repo.update(mv)
 
     def mark_ready(
         self,
