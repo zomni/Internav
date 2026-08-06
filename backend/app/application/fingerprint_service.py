@@ -3,7 +3,7 @@ from typing import Any
 from uuid import UUID
 
 from app.domain.entities.access_point_observation import AccessPointObservation
-from app.domain.entities.campaign import Campaign
+from app.domain.entities.campaign import Campaign, CampaignStatus
 from app.domain.entities.fingerprint import Fingerprint
 from app.domain.errors import BusinessRuleViolation, DomainValidationError
 from app.domain.events import DomainEvent, EventBus, EventType
@@ -30,11 +30,27 @@ class FingerprintService:
         self._require_campaign_active(campaign_id)
         return self._fingerprint_repo.list_by_campaign(campaign_id)
 
+    def count_by_campaign(self, campaign_id: UUID) -> int:
+        self._require_campaign_active(campaign_id)
+        return self._fingerprint_repo.count_by_campaign(campaign_id)
+
     def get(self, fingerprint_id: UUID) -> Fingerprint:
         fp = self._fingerprint_repo.get(fingerprint_id)
         if fp is None:
             raise LookupError("Fingerprint not found.")
         return fp
+
+    def delete(self, fingerprint_id: UUID, deleted_by: UUID | None = None) -> None:
+        fp = self.get(fingerprint_id)
+        campaign = self._campaign_repo.get(fp.campaign_id)
+        if campaign is not None and campaign.status in (
+            CampaignStatus.COMPLETED,
+            CampaignStatus.ARCHIVED,
+        ):
+            raise BusinessRuleViolation(
+                f"Cannot delete fingerprints from a {campaign.status.value.lower()} campaign."
+            )
+        self._fingerprint_repo.soft_delete(fingerprint_id, deleted_by)
 
     def create(
         self,

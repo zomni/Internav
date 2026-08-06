@@ -9,6 +9,7 @@ import { SiteListPage } from './pages/SiteListPage';
 import { BuildingListPage } from './pages/BuildingListPage';
 import { FloorListPage } from './pages/FloorListPage';
 import { CampaignListPage } from './pages/CampaignListPage';
+import { CapturesPage } from './pages/CapturesPage';
 import { DatasetListPage } from './pages/DatasetListPage';
 import { GridListPage } from './pages/GridListPage';
 import { GridViewPage } from './pages/GridViewPage';
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="/floors" element={<FloorListPage />} />
         <Route path="/floors/:floorId/grid" element={<GridViewPage />} />
         <Route path="/campaigns" element={<CampaignListPage />} />
+        <Route path="/campaigns/:campaignId/captures" element={<CapturesPage />} />
         <Route path="/datasets" element={<DatasetListPage />} />
         <Route path="/grids" element={<GridListPage />} />
         <Route path="/models" element={<ModelListPage />} />

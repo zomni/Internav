@@ -950,6 +950,11 @@
   border-color: #64748b;
 }
 
+.legend-swatch.active {
+  background: rgba(22, 163, 74, 0.85);
+  border-color: #16a34a;
+}
+
 .legend-note {
   color: var(--color-text-muted);
   font-style: italic;

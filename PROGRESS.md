@@ -1460,4 +1460,200 @@ completar campaña(s) → Dataset → Add Campaigns → Build → Create Model �
 Publish. La campaña del Piso 2 ("Primera campanya") sigue Paused con 4 fingerprints
 (insuficientes para un modelo útil; capturar más antes de completar).
 
+## Capture App: fix throttling de escaneo WiFi + Sync Status con celdas (6 Ago 2026)
+
+### Bug 1 — "Failed to start WiFi scan" al 5º escaneo consecutivo
+
+**Causa:** Android limita cada app en primer plano a **4 escaneos por ventana de
+2 minutos** (Android 8+); el 5º `WifiManager.startScan()` devuelve `false` y la app
+mostraba el error muerto, obligando a esperar 2+ min a ciegas. No hay API pública
+para saltarse el throttle (la exención requiere permiso signature `NETWORK_SETTINGS`).
+
+**Fix en `capture-app/.../ui/screens/CaptureScreen.kt`:**
+- `performScan()` ahora es **throttle-aware**: registra los timestamps de los
+  escaneos exitosos (`scanTimestamps`); si `startScan()` devuelve `false`, calcula
+  cuánto falta para que la ventana de 2 min expire (`throttleWaitMs()`: si hay ≥4
+  escaneos en la ventana, espera hasta que salga el más antiguo) y **reintenta
+  automáticamente** mostrando un countdown en vivo.
+- UI: card info (tertiaryContainer) "Android scan limit reached. Retrying
+  automatically in Xs..." que se actualiza cada segundo y desaparece al loguear el
+  escaneo. El botón Scan queda deshabilitado mientras se espera (spinner).
+- Constantes `SCAN_BUDGET = 4`, `SCAN_WINDOW_MS = 120_000L`.
+- Cada muestra sigue usando un escaneo fresco (decisión del usuario: no reusar
+  resultados stale). Throughput máximo sostenible ~2 scans/min (límite de la
+  plataforma); el countdown + auto-retry elimina la espera a ciegas.
+
+### Bug 2 — Sync Status no identifica la celda ni muestra conteos por celda
+
+**Problema:** cada item mostraba `Cell: {uuid truncado}` (imposible de identificar
+con varias capturas) y no había conteo de capturas por celda.
+
+**Cambios:**
+- `shared/.../local/AppDatabase.kt`:
+  - `PendingFingerprintEntity` nueva columna `cell_label` (nullable).
+  - Versión de BD **2 → 3** con `MIGRATION_2_3` (`ALTER TABLE
+    pending_fingerprints ADD COLUMN cell_label TEXT`), registrada en `getInstance`.
+  - Nuevo DAO `getAllFingerprints()` (todos los estados, incl. Completed).
+- `capture-app/.../di/AppModule.kt`: el provider Hilt de `AppDatabase` ahora
+  también registra `MIGRATION_2_3`.
+- `shared/.../sync/SyncManager.kt`: `enqueueFingerprint(..., cellLabel, ...)`
+  persiste el label `#N (row,col)` al capturar.
+- `capture-app/.../ui/screens/CaptureScreen.kt`: pasa `cellLabel` al enqueue.
+- `capture-app/.../ui/screens/SyncStatusScreen.kt`: lista **agrupada por celda**
+  con header "Cell: #N (row,col)" + conteo de capturas de esa celda; cada item
+  muestra "Sample #N" + status + retries; cabecera resumen
+  "X captures | Y cells"; estado vacío con mensaje.
+
+**Verificación:** `:capture-app:compileDebugKotlin` y `:user-app:compileDebugKotlin`
+→ BUILD SUCCESSFUL (offline). El user-app usa `fallbackToDestructiveMigration`, así
+que el bump 2→3 no lo rompe.
+
+**Pendiente manual:** `.\gradlew.bat :capture-app:assembleDebug` y reinstalar el APK
+(la migración preserva los fingerprints pendientes existentes).
+
+## Capture App: throttle persistente + totales backend + mapa enfocado + Sync Now inline (6 Ago 2026)
+
+### 1. Throttle WiFi y contador de samples que sobreviven al Home
+
+**Problema:** `scanTimestamps` y `sampleNumber` eran `remember` local en
+`CaptureScreen` → al salir al Home y volver se perdían; el OS mantiene el throttle
+(4 scans/2 min por app) aunque la pantalla se reinicie, así que al volver fallaba
+"Failed to start WiFi scan" sin countdown.
+
+**Cambios:**
+- `capture-app/.../ui/utils/WifiScanThrottle.kt` (nuevo): singleton con
+  `SCAN_BUDGET=4`, `SCAN_WINDOW_MS=120_000`, `recordScan(now)`,
+  `waitMsUntilAllowed(now)`; los timestamps se **persisten en `internav_prefs`**
+  (`wifi_scan_timestamps`) para sobrevivir incluso a la muerte del proceso.
+- `CaptureScreen.kt`: `WifiScanThrottle.attach()` al entrar; `performScan()`
+  registra el scan exitoso y espera con countdown usando el singleton (se eliminó
+  `throttleWaitMs` y `scanTimestamps` locales).
+- **Contador persistente por celda:** nuevo DAO
+  `getMaxSampleNumberForCell(cellId)`; `LaunchedEffect(cellId)` inicia
+  `sampleNumber = max_local + 1` → al volver a una celda la numeración continúa.
+
+### 2. Mini-mapa enfoca la celda capturada + rótulo
+
+- `CellMap.kt`: nuevo parámetro `focusedCellId`; `LaunchedEffect` computa
+  `scale`/`offset` para **centrar la celda** (~25% del lado corto, clamp 1..8,
+  `MAX_SCALE` 5→8, offset clampado para que el plano llene la vista). Gestos
+  manuales intactos. (Ajuste: el primer valor 40% quedaba "demasiado cerca" →
+  reducido a 25%.)
+- `CaptureScreen.kt`: pasa `focusedCellId = cellId` y agrega un **badge** sobre el
+  mini-mapa con "Cell: #N (row,col) | Sample: M" + "Backend: N" (capturas de la
+  celda en el servidor, vía `listFingerprints(campaignId)` contando por `cellId`).
+
+### 3. Totales del backend visibles
+
+- `SyncStatusScreen.kt`:
+  - Agrupa por `cellId` (ya no por label) y **descarga los totales del server**
+    (`listFingerprints` por campaña distinta, refresh throttled a ~5 s, errores
+    capturados con fallback).
+  - Header de celda: "Cell: #N (row,col)" + "X local" + "Backend: M".
+- `CellSelectionScreen.kt`: la vista lista muestra el conteo de capturas debajo del
+  label ("N capturas").
+
+### 4. Backfill de cell_label para filas viejas (el "código largo")
+
+**Causa:** las filas capturadas antes de la columna `cell_label` tienen `NULL` →
+el fallback mostraba el UUID.
+
+**Fix:** en `SyncStatusScreen`, si hay filas con `cell_label IS NULL`, resuelve el
+label desde el backend (campaign → floor → grid activo → cells → `cellNumber`) y lo
+**persiste** con el nuevo DAO `updateCellLabel(cellId, label)`. Un solo intento por
+visita (`backfillDone`); las filas quedan etiquetadas permanentemente.
+
+### 5. Sync Now ejecuta el sync en vivo (ya no queda en "Sync scheduled")
+
+**Causa:** el botón solo encolaba WorkManager; los uploads fallaban en background y
+los items quedaban Failed/descartados sin que el usuario viera el motivo.
+
+**Cambios:**
+- `SyncStatusScreen.kt`: "Sync Now" ejecuta `SyncManager.syncPending()`
+  **directamente** (IO) con `ApiClient.ensureReady()` antes; muestra el resumen
+  "Sync complete: X uploaded, Y rejected, Z failed" + motivos (primeros 8).
+- `shared/.../api/ApiClient.kt`: nuevo `ensureReady(context)` (inicializa desde
+  `server_url` persistido + `restoreFromPrefs`); `SyncWorker` lo reutiliza.
+- `shared/.../sync/SyncManager.kt`:
+  - `UploadResult.Success(serverId)` / `Rejected(reason)` / `Failure(reason)`.
+  - **409/422 ya no se descartan en silencio**: `markRejected(id)` (nuevo DAO,
+    status `Rejected` en la columna existente — sin migración) y se reportan en el
+    resumen y en la lista (icono de error).
+  - Los motivos se extraen del `errorBody` (`ApiEnvelope.message/errors`).
+  - `SyncResult.Completed(successCount, rejectedCount, failCount, errors)`.
+- `shared/.../local/AppDatabase.kt`: DAOs `getMaxSampleNumberForCell`,
+  `updateCellLabel`, `markRejected` (solo queries — sin bump de versión).
+
+### Build
+
+`.\gradlew.bat :capture-app:assembleDebug --console=plain --offline` →
+**BUILD SUCCESSFUL** (14:53). APK:
+`android/capture-app/build/outputs/apk/debug/capture-app-debug.apk` (18.4 MB).
+
+**Pendiente manual:** reinstalar el APK; verificar Sync Now (debería mostrar
+motivos reales si falla — p. ej. campaña fuera de Collecting/Paused, conexión al
+server, o tokens expirados) y que el mapa se enfoca en la celda al capturar.
+
+### Pendiente / conocido
+
+- El sync worker background sigue para sync periódico (15 min) y respeta el nuevo
+  `UploadResult`; si la campaña está `Completed`/`Archived`, todos los uploads darán
+  409 → los items quedan `Rejected` (visible). Para re-colectar hay que crear una
+  campaña nueva en el piso.
+
+## Admin web: capturas por campaña (mapa + lista + borrado) (6 Ago 2026)
+
+Decisión del usuario: vista por campaña en `/campaigns/:campaignId/captures`;
+borrado **solo si la campaña no está completada** (Draft/Ready/Collecting/Paused;
+bloqueado en Completed/Archived).
+
+### Backend (delete + count)
+
+- `app/application/fingerprint_service.py`:
+  - `delete(fingerprint_id, deleted_by)` — valida existencia (404), obtiene la
+    campaña del fingerprint y lanza `BusinessRuleViolation` (409) si está
+    `Completed`/`Archived`; luego `soft_delete()`.
+  - `count_by_campaign(campaign_id)` — reutiliza el repo existente.
+- `app/api/routers/fingerprints.py`:
+  - `DELETE /api/v1/fingerprints/{fingerprint_id}` → 204 (RBAC Operator+).
+  - `GET /api/v1/campaigns/{campaign_id}/fingerprints/count` → `{campaign_id, count}`
+    (público autenticado, mismo patrón que list).
+- `spec/36_FINGERPRINT_API.md` actualizado con los 5 endpoints reales (list,
+  count, get, post, delete) y sus reglas.
+- Tests nuevos en `tests/test_fingerprint_api.py`: delete activa→204 y desaparece
+  del listado, delete en campaña Completed→409 (fingerprint intacto), 404, viewer→403,
+  count por campaña, count campaña inexistente→404.
+
+### Admin Portal
+
+- `src/types/index.ts`: `Fingerprint` completado (device_id, captured_at,
+  sample_number, orientation, notes, is_active) y `AccessPointObservation`
+  expandido (id, fingerprint_id, channel, band, security, is_active, timestamps).
+- `src/pages/CapturesPage.tsx` (nuevo) en `/campaigns/:campaignId/captures`:
+  - Carga campaña + floor + building + plan activo + grid activa + celdas +
+    fingerprints (mismo patrón que GridViewPage).
+  - **Mapa** SVG sobre el plano: celdas coloreadas con la misma interpolación
+    rojo→verde del capture-app (`cellCaptureColor`, count 0→10+), badge circular
+    con el conteo por celda, click en celda filtra la lista (toggle).
+  - **Lista** (`#N (row,col) | Sample # | Device | Capturado | Obs | Actions`):
+    botón **View** (modal con observaciones vía `GET /fingerprints/{id}`) y
+    **Delete** (ConfirmationDialog → `DELETE` → refresh + toast).
+  - Delete solo visible para Operator+ **y** campaña no completada (`canDelete`).
+  - Toggle Map/List, breadcrumb Campaigns → Campaña → Captures, estados vacíos.
+- `src/pages/CampaignListPage.tsx`: nueva columna **Captures** (conteo vía
+  `/campaigns/{id}/fingerprints/count` + botón "View" → página de capturas,
+  visible para todos los roles autenticados).
+- `src/App.tsx`: ruta `/campaigns/:campaignId/captures`.
+- `src/App.css`: `.legend-swatch.active` para la leyenda del mapa.
+
+### Verificación
+
+- Backend: `pytest` **385 passed** (12 tests de fingerprints), `ruff check app tests`
+  → All checks passed.
+- Portal: `npm run build` OK (tsc + vite, 57 módulos).
+
+**Pendiente manual:** recargar `localhost:8000/campaigns` (Ctrl+F5) — el bundle
+nuevo lo sirve el backend solo si se recompiló/distribuyó; probar Captures de
+"Primera campanya" (Collecting → se pueden ver/borrar capturas).
+
 

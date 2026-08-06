@@ -75,6 +75,18 @@ def list_fingerprints(
     return success(data=[_fp_dict(fp) for fp in items])
 
 
+@router.get("/campaigns/{campaign_id}/fingerprints/count")
+def count_fingerprints(
+    campaign_id: UUID,
+    service: Any = Depends(get_fingerprint_service),
+) -> dict[str, Any]:
+    try:
+        count = service.count_by_campaign(campaign_id)
+    except LookupError as exc:
+        raise _handle_domain_errors(exc)
+    return success(data={"campaign_id": str(campaign_id), "count": count})
+
+
 @router.get("/fingerprints/{fingerprint_id}")
 def get_fingerprint(
     fingerprint_id: UUID,
@@ -86,6 +98,21 @@ def get_fingerprint(
         raise _handle_domain_errors(exc)
     observations = service.get_observations(fingerprint_id)
     return success(data=_fp_dict(entity, observations))
+
+
+@router.delete(
+    "/fingerprints/{fingerprint_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_fingerprint(
+    fingerprint_id: UUID,
+    _user: Any = Depends(OperatorOrAdmin),
+    service: Any = Depends(get_fingerprint_service),
+) -> None:
+    try:
+        service.delete(fingerprint_id)
+    except (LookupError, BusinessRuleViolation) as exc:
+        raise _handle_domain_errors(exc)
 
 
 @router.post(

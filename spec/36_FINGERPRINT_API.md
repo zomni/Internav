@@ -21,6 +21,14 @@ Rules
 - Must contain at least one AccessPointObservation.
 
 Endpoints
-GET /fingerprints
+GET /campaigns/{campaign_id}/fingerprints
+  List fingerprints for a campaign (no observations).
+GET /campaigns/{campaign_id}/fingerprints/count
+  Count fingerprints for a campaign.
 GET /fingerprints/{id}
-POST /fingerprints
+  Get one fingerprint including observations.
+POST /campaigns/{campaign_id}/fingerprints
+  Create a fingerprint (Operator+). Requires campaign Collecting or Paused.
+DELETE /fingerprints/{id}
+  Soft-delete a fingerprint (Operator+). Rejected (409) when the campaign
+  is Completed or Archived.

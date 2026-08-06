@@ -26,6 +26,9 @@ htmlcov/
 # ---- Model artifacts (generated at training time) ----
 backend/models/
 
+# ---- Uploaded floor plans (runtime / test artifacts) ----
+backend/uploads/
+
 # ---- Logs ----
 *.log
 

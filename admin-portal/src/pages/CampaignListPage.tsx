@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { Campaign } from '../types';
 import { useCrud } from '../hooks/useCrud';
 import { useAuth } from '../hooks/useAuth';
@@ -24,12 +25,14 @@ const STATUS_ACTIONS: Record<string, { action: string; label: string }[]> = {
 
 export function CampaignListPage() {
   const { isOperator, isAdmin } = useAuth();
+  const navigate = useNavigate();
   const crud = useCrud<Campaign>('/campaigns');
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [formName, setFormName] = useState('');
   const [formFloor, setFormFloor] = useState('');
   const [floors, setFloors] = useState<{ id: string; name: string }[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Campaign | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -41,6 +44,29 @@ export function CampaignListPage() {
       .then((data) => setFloors(data as { id: string; name: string }[]))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!crud.items.length) return;
+    let cancelled = false;
+    Promise.all(
+      crud.items.map(async (c) => {
+        try {
+          const data = await api.get<{ campaign_id: string; count: number }>(
+            `/campaigns/${c.id}/fingerprints/count`,
+          );
+          return { id: c.id, count: data.count };
+        } catch {
+          return { id: c.id, count: 0 };
+        }
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      setCounts(Object.fromEntries(rows.map((r) => [r.id, r.count])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [crud.items]);
 
   const filtered = crud.items.filter(
     (c) => !c.is_deleted && c.name.toLowerCase().includes(search.toLowerCase()),
@@ -87,6 +113,18 @@ export function CampaignListPage() {
     { key: 'started_at', header: 'Started', render: (r) => formatDate(r.started_at) },
     { key: 'finished_at', header: 'Finished', render: (r) => formatDate(r.finished_at) },
     { key: 'created_at', header: 'Created', render: (r) => formatDate(r.created_at) },
+    {
+      key: 'captures',
+      header: 'Captures',
+      render: (r) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>{counts[r.id] ?? '…'}</span>
+          <button className="btn btn-sm" onClick={() => navigate(`/campaigns/${r.id}/captures`)}>
+            View
+          </button>
+        </div>
+      ),
+    },
     ...(isOperator
       ? [
           {

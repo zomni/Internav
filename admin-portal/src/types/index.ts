@@ -156,17 +156,31 @@ export interface Fingerprint {
   id: string;
   campaign_id: string;
   cell_id: string;
+  device_id: string;
+  captured_at: string;
+  sample_number: number;
+  orientation: number;
+  notes: string | null;
   observations: AccessPointObservation[];
   version: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
 
 export interface AccessPointObservation {
+  id: string;
+  fingerprint_id: string;
   bssid: string;
   ssid: string | null;
   rssi: number;
   frequency: number;
+  channel: number;
+  band: string;
+  security: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ApiEnvelope<T> {
