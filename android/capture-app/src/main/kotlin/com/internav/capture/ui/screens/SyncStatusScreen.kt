@@ -1,5 +1,6 @@
 package com.internav.capture.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,9 +16,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.internav.capture.ui.utils.cellLabel
+import com.internav.shared.api.ApiClient
 import com.internav.shared.local.AppDatabase
 import com.internav.shared.local.PendingFingerprintEntity
-import com.internav.shared.sync.SyncWorker
+import com.internav.shared.sync.SyncManager
+import com.internav.shared.sync.SyncResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -31,20 +35,83 @@ fun SyncStatusScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var fingerprints by remember { mutableStateOf<List<PendingFingerprintEntity>>(emptyList()) }
+    var serverCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var syncing by remember { mutableStateOf(false) }
     var syncResult by remember { mutableStateOf<String?>(null) }
+    var backfillDone by remember { mutableStateOf(false) }
+    var lastServerFetch by remember { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
 
-    fun load() {
+    suspend fun backfillLabels(dao: com.internav.shared.local.PendingFingerprintDao, fps: List<PendingFingerprintEntity>) {
+        if (backfillDone) return
+        backfillDone = true
+        val missing = fps.filter { it.cellLabel == null }
+        val campaigns = missing.map { it.campaignId }.distinct()
+        if (campaigns.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            for (cid in campaigns) {
+                try {
+                    val campResp = ApiClient.getService().getCampaign(cid)
+                    val floorId = campResp.body()?.data?.floorId ?: continue
+                    val gridResp = ApiClient.getService().listGrids(floorId)
+                    val grid = gridResp.body()?.data?.firstOrNull { it.status == "Active" } ?: continue
+                    val cellResp = ApiClient.getService().listCells(grid.id)
+                    val cells = cellResp.body()?.data ?: continue
+                    if (cells.isEmpty()) continue
+                    val labels = cells.associate { it.id to cellLabel(it, cells) }
+                    missing.filter { it.campaignId == cid }
+                        .map { it.cellId }
+                        .distinct()
+                        .forEach { cellId -> labels[cellId]?.let { dao.updateCellLabel(cellId, it) } }
+                } catch (e: Exception) {
+                    Log.e("SyncStatusScreen", "Label backfill failed for campaign $cid", e)
+                }
+            }
+        }
+    }
+
+    suspend fun fetchServerCounts(fps: List<PendingFingerprintEntity>) {
+        val campaigns = fps.map { it.campaignId }.distinct()
+        if (campaigns.isEmpty()) {
+            serverCounts = emptyMap()
+            return
+        }
+        val counts = mutableMapOf<String, Int>()
+        withContext(Dispatchers.IO) {
+            for (cid in campaigns) {
+                try {
+                    val resp = ApiClient.getService().listFingerprints(cid)
+                    if (resp.isSuccessful) {
+                        val data = resp.body()?.data ?: emptyList()
+                        data.forEach { counts[it.cellId] = (counts[it.cellId] ?: 0) + 1 }
+                    }
+                } catch (e: Exception) {
+                    Log.e("SyncStatusScreen", "Fetch server counts failed for campaign $cid", e)
+                }
+            }
+        }
+        serverCounts = counts
+    }
+
+    fun load(forceServer: Boolean = false) {
         scope.launch {
             val db = AppDatabase.getInstance(context.applicationContext)
             val dao = db.pendingFingerprintDao()
-            val all = withContext(Dispatchers.IO) {
-                dao.getPendingFingerprints() + dao.getUploadingFingerprints() + dao.getFailedFingerprintsReadyForRetry(System.currentTimeMillis())
+            var fps = withContext(Dispatchers.IO) { dao.getAllFingerprints() }
+            if (fps.any { it.cellLabel == null }) {
+                backfillLabels(dao, fps)
+                fps = withContext(Dispatchers.IO) { dao.getAllFingerprints() }
             }
-            fingerprints = all.distinctBy { it.id }
+            fingerprints = fps
+            val now = System.currentTimeMillis()
+            if (forceServer || now - lastServerFetch >= 5000) {
+                lastServerFetch = now
+                fetchServerCounts(fps)
+            }
         }
     }
+
+    val grouped = fingerprints.groupBy { it.cellId }
 
     LaunchedEffect(Unit) {
         load()
@@ -92,9 +159,22 @@ fun SyncStatusScreen(
                             syncing = true
                             syncResult = null
                             try {
-                                SyncWorker.enqueue(context)
-                                syncResult = "Sync scheduled"
-                                load()
+                                val db = AppDatabase.getInstance(context.applicationContext)
+                                val dao = db.pendingFingerprintDao()
+                                val result = withContext(Dispatchers.IO) {
+                                    ApiClient.ensureReady(context.applicationContext)
+                                    SyncManager(dao).syncPending()
+                                }
+                                syncResult = when (result) {
+                                    is SyncResult.NoOp -> "No pending fingerprints to sync"
+                                    is SyncResult.Completed -> {
+                                        val summary = "Sync complete: ${result.successCount} uploaded, " +
+                                            "${result.rejectedCount} rejected, ${result.failCount} failed"
+                                        if (result.errors.isEmpty()) summary
+                                        else summary + "\n" + result.errors.take(8).joinToString("\n")
+                                    }
+                                }
+                                load(forceServer = true)
                             } catch (e: Exception) {
                                 syncResult = "Error: ${e.message}"
                             } finally {
@@ -123,30 +203,60 @@ fun SyncStatusScreen(
             }
 
             Spacer(Modifier.height(12.dp))
-            Text("${fingerprints.size} items", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "${fingerprints.size} captures | ${grouped.size} cells",
+                style = MaterialTheme.typography.titleSmall
+            )
+
+            if (fingerprints.isEmpty()) {
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    "No fingerprints stored locally yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(fingerprints) { fp ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = when (fp.status) {
-                                    "Pending" -> Icons.Default.HourglassEmpty
-                                    "Uploading" -> Icons.Default.Sync
-                                    "Completed" -> Icons.Default.CheckCircle
-                                    else -> Icons.Default.Error
-                                },
-                                contentDescription = null,
-                                tint = when (fp.status) {
-                                    "Completed" -> MaterialTheme.colorScheme.primary
-                                    "Failed" -> MaterialTheme.colorScheme.error
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                grouped.forEach { (cellId, items) ->
+                    item(key = "cell-$cellId") {
+                        val label = items.firstNotNullOfOrNull { it.cellLabel } ?: cellId
+                        val serverCount = serverCounts[cellId] ?: 0
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                        ) {
+                            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Cell: $label", style = MaterialTheme.typography.titleSmall)
+                                    Text("${items.size} local", style = MaterialTheme.typography.bodySmall)
+                                    Text("Backend: $serverCount", style = MaterialTheme.typography.bodySmall)
                                 }
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text("Cell: ${fp.cellId.take(8)}...", style = MaterialTheme.typography.bodyMedium)
-                                Text("Status: ${fp.status} | Retries: ${fp.retryCount}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    items(items, key = { it.id }) { fp ->
+                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = when (fp.status) {
+                                        "Pending" -> Icons.Default.HourglassEmpty
+                                        "Uploading" -> Icons.Default.Sync
+                                        "Completed" -> Icons.Default.CheckCircle
+                                        else -> Icons.Default.Error
+                                    },
+                                    contentDescription = null,
+                                    tint = when (fp.status) {
+                                        "Completed" -> MaterialTheme.colorScheme.primary
+                                        "Failed", "Rejected" -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Sample #${fp.sampleNumber} — ${fp.cellLabel ?: fp.cellId}", style = MaterialTheme.typography.bodyMedium)
+                                    Text("Status: ${fp.status} | Retries: ${fp.retryCount}", style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }

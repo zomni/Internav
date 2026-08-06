@@ -39,8 +39,9 @@ private val PRESSED_COLOR = Color(0xAA22C55E)
 private val MIN_LABEL_WIDTH_PX = 28f
 
 private const val MIN_SCALE = 1f
-private const val MAX_SCALE = 5f
+private const val MAX_SCALE = 8f
 private const val PRESS_DURATION_MS = 300L
+private const val FOCUS_FRACTION = 0.25f
 
 @androidx.compose.runtime.Composable
 fun CellMap(
@@ -49,6 +50,7 @@ fun CellMap(
     gridCellSize: Float,
     cells: List<Cell>,
     selectedCellId: String? = null,
+    focusedCellId: String? = null,
     onCellTap: ((Cell) -> Unit)? = null,
     captureCounts: Map<String, Int> = emptyMap(),
     modifier: Modifier = Modifier
@@ -78,6 +80,31 @@ fun CellMap(
             kotlinx.coroutines.delay(PRESS_DURATION_MS)
             pressedCellId = null
         }
+    }
+
+    LaunchedEffect(focusedCellId, viewSize, cells, gridCellSize, plan) {
+        if (viewSize.width == 0 || viewSize.height == 0) return@LaunchedEffect
+        val focus = focusedCellId?.let { id -> cells.firstOrNull { it.id == id } } ?: return@LaunchedEffect
+        val sx = viewSize.width.toFloat() / plan.width
+        val sy = viewSize.height.toFloat() / plan.height
+        val cellPx = gridCellSize * max(sx, sy)
+        if (cellPx <= 0f) return@LaunchedEffect
+        val target = (min(viewSize.width, viewSize.height).toFloat() * FOCUS_FRACTION / cellPx)
+            .coerceIn(MIN_SCALE, MAX_SCALE)
+        val centerX = viewSize.width / 2f
+        val centerY = viewSize.height / 2f
+        val cellCenterX = (focus.column + 0.5f) * gridCellSize * sx
+        val cellCenterY = (focus.row + 0.5f) * gridCellSize * sy
+        scale = target
+        val halfW = viewSize.width / 2f
+        val halfH = viewSize.height / 2f
+        val minX = halfW * (1f - target)
+        val maxX = halfW * (target - 1f)
+        val minY = halfH * (1f - target)
+        val maxY = halfH * (target - 1f)
+        val offX = ((centerX - cellCenterX) * target).coerceIn(minX, maxX)
+        val offY = ((centerY - cellCenterY) * target).coerceIn(minY, maxY)
+        offset = Offset(offX, offY)
     }
 
     Canvas(

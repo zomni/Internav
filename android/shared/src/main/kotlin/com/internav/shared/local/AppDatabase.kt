@@ -2,12 +2,14 @@ package com.internav.shared.local
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
 
 @Entity(tableName = "pending_fingerprints")
 data class PendingFingerprintEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     @ColumnInfo(name = "campaign_id") val campaignId: String,
     @ColumnInfo(name = "cell_id") val cellId: String,
+    @ColumnInfo(name = "cell_label") val cellLabel: String? = null,
     @ColumnInfo(name = "device_id") val deviceId: String,
     @ColumnInfo(name = "captured_at") val capturedAt: String,
     @ColumnInfo(name = "sample_number") val sampleNumber: Int,
@@ -27,8 +29,17 @@ interface PendingFingerprintDao {
     @Query("SELECT * FROM pending_fingerprints WHERE status = 'Pending' ORDER BY created_at ASC")
     suspend fun getPendingFingerprints(): List<PendingFingerprintEntity>
 
+    @Query("SELECT * FROM pending_fingerprints ORDER BY created_at ASC")
+    suspend fun getAllFingerprints(): List<PendingFingerprintEntity>
+
     @Query("SELECT * FROM pending_fingerprints WHERE status = 'Uploading'")
     suspend fun getUploadingFingerprints(): List<PendingFingerprintEntity>
+
+    @Query("SELECT COALESCE(MAX(sample_number), 0) FROM pending_fingerprints WHERE cell_id = :cellId")
+    suspend fun getMaxSampleNumberForCell(cellId: String): Int
+
+    @Query("UPDATE pending_fingerprints SET cell_label = :label WHERE cell_id = :cellId AND (cell_label IS NULL OR cell_label != :label)")
+    suspend fun updateCellLabel(cellId: String, label: String)
 
     @Query("SELECT * FROM pending_fingerprints WHERE status = 'Failed' AND (next_retry_at IS NULL OR next_retry_at <= :now)")
     suspend fun getFailedFingerprintsReadyForRetry(now: Long): List<PendingFingerprintEntity>
@@ -47,6 +58,9 @@ interface PendingFingerprintDao {
 
     @Query("UPDATE pending_fingerprints SET status = 'Failed', retry_count = retry_count + 1, next_retry_at = :nextRetryAt WHERE id = :id")
     suspend fun markFailed(id: Long, nextRetryAt: Long?)
+
+    @Query("UPDATE pending_fingerprints SET status = 'Rejected' WHERE id = :id")
+    suspend fun markRejected(id: Long)
 
     @Query("UPDATE pending_fingerprints SET status = 'Uploading' WHERE id = :id")
     suspend fun markUploading(id: Long)
@@ -124,7 +138,7 @@ interface CachedCellDao {
         CachedModelEntity::class,
         CachedCellEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -136,13 +150,19 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_fingerprints ADD COLUMN cell_label TEXT")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "internav_capture_db"
-                ).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_2_3).build().also { INSTANCE = it }
             }
         }
     }

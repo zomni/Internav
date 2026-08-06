@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -29,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.internav.capture.navigation.NavState
 import com.internav.capture.ui.components.CellMap
+import com.internav.capture.ui.utils.WifiScanThrottle
 import com.internav.shared.api.ApiClient
 import com.internav.shared.graphics.decodeFloorPlanImage
 import com.internav.shared.local.AppDatabase
@@ -74,8 +76,25 @@ fun CaptureScreen(
     var planImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var gridCellSize by remember { mutableStateOf(0f) }
     var cells by remember { mutableStateOf<List<Cell>>(emptyList()) }
+    var retryCountdown by remember { mutableStateOf(0) }
+    var backendCount by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(campaignId, cellId) {
+        try {
+            val resp = withContext(Dispatchers.IO) {
+                ApiClient.getService().listFingerprints(campaignId)
+            }
+            if (resp.isSuccessful) {
+                val data = resp.body()?.data ?: emptyList()
+                backendCount = data.count { it.cellId == cellId }
+            }
+        } catch (e: Exception) {
+            backendCount = null
+        }
+    }
 
     LaunchedEffect(floorId) {
+        WifiScanThrottle.attach(context.applicationContext)
         try {
             val gridResp = ApiClient.getService().listGrids(floorId)
             val activeGrid = gridResp.body()?.data?.firstOrNull { it.status == "Active" }
@@ -103,22 +122,46 @@ fun CaptureScreen(
         }
     }
 
+    LaunchedEffect(cellId) {
+        val db = AppDatabase.getInstance(context.applicationContext)
+        val maxSample = withContext(Dispatchers.IO) {
+            db.pendingFingerprintDao().getMaxSampleNumberForCell(cellId)
+        }
+        sampleNumber = maxSample + 1
+    }
+
     suspend fun performScan() {
         scanning = true
         error = null
+        retryCountdown = 0
         try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             if (!wifiManager.isWifiEnabled) {
                 error = "WiFi is disabled. Please enable WiFi."
-                scanning = false
                 return
             }
 
-            val scanSuccess = withContext(Dispatchers.IO) { wifiManager.startScan() }
-            if (!scanSuccess) {
-                error = "Failed to start WiFi scan"
-                scanning = false
-                return
+            while (true) {
+                val now = SystemClock.elapsedRealtime()
+                val scanStarted = withContext(Dispatchers.IO) { wifiManager.startScan() }
+                if (scanStarted) {
+                    WifiScanThrottle.recordScan(now)
+                    break
+                }
+
+                val waitMs = WifiScanThrottle.waitMsUntilAllowed(now)
+                if (waitMs <= 0L) {
+                    error = "Failed to start WiFi scan"
+                    return
+                }
+
+                val deadline = now + waitMs
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    val remaining = deadline - SystemClock.elapsedRealtime()
+                    retryCountdown = ((remaining + 999L) / 1000L).toInt()
+                    kotlinx.coroutines.delay(1000)
+                }
+                retryCountdown = 0
             }
 
             kotlinx.coroutines.delay(2000)
@@ -135,6 +178,7 @@ fun CaptureScreen(
             error = e.message ?: "Scan failed"
         } finally {
             scanning = false
+            retryCountdown = 0
         }
     }
 
@@ -176,6 +220,7 @@ fun CaptureScreen(
                 syncManager.enqueueFingerprint(
                     campaignId = campaignId,
                     cellId = cellId,
+                    cellLabel = cellLabel,
                     deviceId = android.os.Build.MODEL + "-" + android.os.Build.ID,
                     capturedAt = Instant.now().toString(),
                     sampleNumber = sampleNumber,
@@ -238,7 +283,11 @@ fun CaptureScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                Text("Cell: $cellLabel | Sample: $sampleNumber", style = MaterialTheme.typography.bodySmall)
+                val backendText = backendCount?.let { " | Backend: $it" } ?: ""
+                Text(
+                    "Cell: $cellLabel | Sample: $sampleNumber$backendText",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Spacer(Modifier.height(8.dp))
 
                 if (floorPlan != null && planImage != null && gridCellSize > 0f) {
@@ -255,8 +304,23 @@ fun CaptureScreen(
                             gridCellSize = gridCellSize,
                             cells = cells,
                             selectedCellId = cellId,
+                            focusedCellId = cellId,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(4.dp)
+                        ) {
+                            Text(
+                                "Cell: $cellLabel | Sample: $sampleNumber$backendText",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                 }
@@ -278,6 +342,21 @@ fun CaptureScreen(
                                 }
                             }
                         }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                if (retryCountdown > 0) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "Android scan limit reached. Retrying automatically in ${retryCountdown}s...",
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(12.dp)
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                 }

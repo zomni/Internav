@@ -175,11 +175,18 @@ fun CellSelectionScreen(
                                     modifier = Modifier.aspectRatio(1f),
                                     onClick = { onCellSelected(cell.id, cellLabel(cell, allCells)) }
                                 ) {
-                                    Box(Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {
+                                    Column(Modifier.fillMaxSize().padding(4.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(
                                             cellLabel(cell, allCells),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = cellCaptureColor(captureCounts[cell.id] ?: 0)
+                                            color = cellCaptureColor(captureCounts[cell.id] ?: 0),
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        )
+                                        Text(
+                                            "${captureCounts[cell.id] ?: 0} capturas",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                         )
                                     }
                                 }

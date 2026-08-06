@@ -17,6 +17,15 @@ object ApiClient {
     val isInitialized: Boolean
         get() = apiService != null
 
+    fun ensureReady(context: Context) {
+        if (!isInitialized) {
+            val prefs = context.getSharedPreferences("internav_prefs", Context.MODE_PRIVATE)
+            val url = prefs.getString("server_url", null) ?: return
+            initialize(url, context)
+        }
+        tokenManager.restoreFromPrefs()
+    }
+
     fun initialize(url: String, context: Context) {
         tokenManager.attach(context)
         baseUrl = url.trimEnd('/') + "/"

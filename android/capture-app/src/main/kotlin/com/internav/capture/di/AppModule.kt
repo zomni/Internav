@@ -22,7 +22,7 @@ object AppModule {
             context.applicationContext,
             AppDatabase::class.java,
             "internav_capture_db"
-        ).build()
+        ).addMigrations(AppDatabase.MIGRATION_2_3).build()
     }
 
     @Provides

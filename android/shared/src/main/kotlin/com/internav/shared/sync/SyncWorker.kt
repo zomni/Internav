@@ -61,14 +61,7 @@ class SyncWorker(
         }
 
         private fun ensureApiReady(context: Context) {
-            val prefs = context.getSharedPreferences("internav_prefs", Context.MODE_PRIVATE)
-            val url = prefs.getString("server_url", null)
-            if (url != null) {
-                if (!ApiClient.isInitialized) {
-                    ApiClient.initialize(url, context)
-                }
-                ApiClient.tokenManager.restoreFromPrefs()
-            }
+            ApiClient.ensureReady(context)
         }
     }
 
